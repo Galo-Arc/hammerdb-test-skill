@@ -28,7 +28,7 @@ DEFAULTS = {
     "build_vus": "1",
     "use_bcp": "false",
     "vu_count": "50",
-    "delay_ms": "3000",
+    "delay_ms": "300",
     "rampup": "2",
     "duration": "10",
 }

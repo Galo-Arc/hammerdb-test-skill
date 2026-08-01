@@ -89,7 +89,7 @@ Error: Database tpcc exists but is not empty, specify a new or empty database na
 ### Problem: Very low TPM / CPU at 1%
 **Cause:** Test load is too light.
 **Fix:**
-1. Reduce User Delay (e.g., from 3000ms to 100ms)
+1. Reduce User Delay (e.g., from 300ms to 100ms)
 2. Increase Virtual Users count
 3. Enable "Use All Warehouses" in Driver Script options
 

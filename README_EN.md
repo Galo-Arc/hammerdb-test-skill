@@ -179,7 +179,7 @@ When ZCode uses the scripts, it replaces these placeholders:
 | `__BUILD_VUS__` | VUs for schema build | `1` |
 | `__USE_BCP__` | Use BCP mode | `false` |
 | `__VU_COUNT__` | Concurrent connections | `1000` |
-| `__DELAY_MS__` | User delay in ms | `3000` |
+| `__DELAY_MS__` | User delay in ms | `300` |
 | `__RAMPUP__` | Warmup minutes | `2` |
 | `__DURATION__` | Test duration minutes | `120` |
 
