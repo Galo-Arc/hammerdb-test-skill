@@ -2,7 +2,7 @@
 
 A ZCode skill for performing TPC-C database stress testing against SQL Server databases. Supports SQL Server 2008/2012/2014/2016/2019/2022.
 
-[简体中文版](README.md)
+[Simplified Chinese Version](README.md)
 
 ## What It Does
 
@@ -66,7 +66,7 @@ python hammerdb_runner.py --action test --ip youripaddress --password yourpasswo
 After installing, trigger the skill by saying any of these:
 
 ```
-/hammerdb-test 帮我在 youripaddress 上跑 HammerDB 测试
+/hammerdb-test run a HammerDB test on youripaddress
 Help me run HammerDB test on this SQL Server
 Run TPC-C benchmark on 192.168.1.100
 Database stress test with 1000 concurrent connections
