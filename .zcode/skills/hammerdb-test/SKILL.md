@@ -19,7 +19,7 @@ When the user invokes this skill, collect the following information upfront:
 5. Test goal: compatibility test, stability test, performance benchmark
 6. Concurrent connections: how many Virtual Users
 7. Test duration: how long to run
-8. User Delay: milliseconds between operations (default 100ms, can be 3000ms for light load)
+8. User Delay: milliseconds between operations (default 100ms, can be 300ms for light load)
 ```
 
 ---

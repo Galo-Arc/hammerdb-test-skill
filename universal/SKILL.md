@@ -29,7 +29,7 @@
 5. 测试目标：兼容性测试 / 稳定性测试 / 性能基准
 6. 并发连接数
 7. 测试时长
-8. 用户操作间隔（毫秒，默认 100ms，轻负载建议 3000ms）
+8. 用户操作间隔（毫秒，默认 100ms，轻负载建议 300ms）
 ```
 
 ---
@@ -183,7 +183,7 @@ END
 
 修改 `scripts/run_tpcc.tcl` 中的参数：
 - `__VU_COUNT__` = 50
-- `__DELAY_MS__` = 3000
+- `__DELAY_MS__` = 300
 - `__RAMPUP__` = 2
 - `__DURATION__` = 10
 
@@ -296,6 +296,6 @@ TEST RESULT : System achieved XXX NOPM from XXX SQL Server TPM
 | `__BUILD_VUS__` | 建库 VU 数 | `1` |
 | `__USE_BCP__` | BCP 模式 | `false` |
 | `__VU_COUNT__` | 并发连接数 | `1000` |
-| `__DELAY_MS__` | 操作间隔(ms) | `3000` |
+| `__DELAY_MS__` | 操作间隔(ms) | `300` |
 | `__RAMPUP__` | 预热时间(分钟) | `2` |
 | `__DURATION__` | 测试时长(分钟) | `120` |
