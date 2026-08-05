@@ -179,12 +179,6 @@ hammerdb-test-skill/
 - Schema 冲突
 - 性能问题
 
-## 已验证环境
-
-| 服务器 | 操作系统 | SQL Server | 结果 |
-|--------|----------|------------|------|
-| 浪潮 + Hygon C86 4G | Windows Server 2019 | SQL Server 2014 | ✅ 通过 |
-
 ## 脚本模板变量
 
 ZCode 使用脚本时会自动替换以下占位符：

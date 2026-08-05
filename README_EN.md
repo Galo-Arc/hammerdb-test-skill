@@ -158,12 +158,6 @@ Every error encountered during real-world testing is documented with cause and f
 - Schema conflicts
 - Performance issues
 
-## Tested Environments
-
-| Server | OS | SQL Server | Result |
-|--------|-----|------------|--------|
-| Inspur + Hygon C86 4G | Windows Server 2019 | SQL Server 2014 | ✅ Passed |
-
 ## Scripts Template Variables
 
 When ZCode uses the scripts, it replaces these placeholders:
