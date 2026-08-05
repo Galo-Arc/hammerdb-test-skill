@@ -125,11 +125,36 @@ error writing "stdout": invalid or incomplete multibyte or wide character
 Copyright
 ```
 **Cause:** Tcl prints a `©` banner at startup. When stdout is a pipe/file, Tcl uses the system ANSI codepage (GBK/936 on zh-CN Windows), which cannot encode `©`. `chcp 65001` alone does not fix piped/redirected stdout.
-**Fix (tested on Windows Server 2019 build 17763, zh-CN):** run hammerdbcli inside a real UTF-8 console:
+**Fix (RECOMMENDED — works on all Windows versions incl. 2008 R2, scheduled tasks, any redirect):** extract the embedded Tcl library to disk with a UTF-8 patched `init.tcl` and point `TCL_LIBRARY` at it:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\prepare_tcl_library.ps1 -HammerDBDir C:\HammerDB-6.0 -OutDir C:\hdb\tcl_lib
+```
+Then set `set "TCL_LIBRARY=C:\hdb\tcl_lib"` before every hammerdbcli run.
+**Legacy fix (Windows 10 / Server 2016+ only):** run hammerdbcli inside a real UTF-8 console:
 ```bat
 "C:\Windows\System32\conhost.exe" --headless cmd /c "chcp 65001 >nul & "C:\HammerDB-6.0\hammerdbcli.exe" tcl auto "C:\path\script.tcl"" > out.log 2>&1
 ```
 Ready-made wrapper: `scripts/hdb_run.bat`. Log output will contain ANSI escape sequences — strip with `-replace '\x1b\[[0-9;?]*[A-Za-z]', ''` before parsing.
+
+### Problem: hammerdbcli exits instantly on 2008 R2 with -1073741515 (0xC0000135 DLL not found)
+**Cause:** the HammerDB 6.0 build links VC++ 2015+ runtime DLLs (`VCRUNTIME140.dll`, `ucrtbase.dll`, ...) that 2008 R2 does not ship.
+**Fix:** copy them next to the exe (2012 R2+ / Win10+ already have them):
+```powershell
+$dst = 'C:\HammerDB-6.0'
+foreach ($dll in @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','ucrtbase.dll')) {
+  Copy-Item "C:\Windows\System32\$dll" (Join-Path $dst $dll) -Force
+}
+```
+Also apply the Phase 1.6 TCL_LIBRARY patch afterwards for the GBK banner crash.
+
+### Problem: Remote execution on servers (SMB + schtasks)
+**Deploy:** `robocopy <pkg> "\\<ip>\C$\hdb" /E` from a `.ps1` file (Git Bash mangles UNC/backslashes).
+**Run:** `schtasks /create /S <ip> /U administrator /P <pass> /TN t /TR "C:\hdb\run.bat" /SC ONCE /ST 23:59 /RU SYSTEM /F` then `/run`. Monitor via `\\<ip>\C$\hdb\logs\*.log`.
+**Gotchas:**
+- A hung previous instance blocks new ones — `schtasks /end`, kill zombie `cmd.exe`/`conhost.exe` (taskkill task), rerun.
+- Set `TMP`/`TEMP` to a writable dir (hammerdbcli writes its jobs DB there).
+- PowerShell 5.1 reads `.ps1` files as ANSI — keep scripts pure ASCII or save UTF-8 with BOM.
+- 2008 R2 servers usually lack `SQL Server Native Client 11.0` — use built-in `{SQL Server}` ODBC driver.
 
 ### Problem: .bat wrapper fails with bizarre parse errors ("'EM' is not recognized...")
 **Cause:** .bat file saved with LF-only line endings (common when written by tools that default to LF). cmd's batch parser needs CRLF.

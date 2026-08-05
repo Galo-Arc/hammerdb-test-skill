@@ -140,7 +140,33 @@ Copyright
 
 **Cause:** HammerDB's Tcl runtime prints a `©` banner at startup. Tcl uses the *console* codepage when stdout is a real console, but the *system ANSI codepage* (e.g. GBK/936 on zh-CN) when stdout is a pipe or file. GBK cannot encode `©`, so the very first `puts` throws. `chcp 65001` alone does NOT help when output is piped/redirected.
 
-**Fix (tested on Windows Server 2019 build 17763, zh-CN locale):** give hammerdbcli a real console with UTF-8 codepage via `conhost --headless`, and redirect *outside* the console:
+### Recommended fix: patched disk Tcl library (works on ALL Windows versions, incl. 2008 R2)
+
+Extract the embedded Tcl library from the exe's zipfs to disk and force UTF-8 on the standard channels in `init.tcl`, then point `TCL_LIBRARY` at it. No console, no conhost, no winpty needed — works even in scheduled tasks / SSH sessions / any stdout redirect:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File prepare_tcl_library.ps1 -HammerDBDir C:\HammerDB-6.0 -OutDir C:\hdb\tcl_lib
+```
+
+Then set before EVERY hammerdbcli invocation (bat / task / session):
+
+```bat
+set "TCL_LIBRARY=C:\hdb\tcl_lib"
+"C:\HammerDB-6.0\hammerdbcli.exe" tcl auto script.tcl
+```
+
+How it works (details for debugging): the custom bootstrap `init.tcl` (loaded via `TCL_LIBRARY`) copies `//zipfs:/app/tcl_library` from the exe's embedded VFS to disk, then `prepare_tcl_library.ps1` prepends to the disk `init.tcl`:
+
+```tcl
+catch { chan configure stdout -encoding utf-8 }
+catch { chan configure stderr -encoding utf-8 }
+```
+
+Verified: banner prints cleanly with piped stdout on zh-CN Windows (2012 R2 and 2008 R2, ACP=936). Note the bootstrap run intentionally fails afterwards (`invalid command name "::tcl::tm::path"`) — that is expected; the copy already happened.
+
+### Legacy fix: conhost UTF-8 console (Windows 10 / Server 2016+ ONLY)
+
+The older approach — works on Win10+ but **fails on 2008 R2 / 2012 R2** (their conhost has no `--headless` support):
 
 ```bat
 "C:\Windows\System32\conhost.exe" --headless cmd /c "chcp 65001 >nul & "C:\path\to\HammerDB-6.0\hammerdbcli.exe" tcl auto "C:\path\to\script.tcl"" > out.log 2>&1
@@ -148,11 +174,52 @@ Copyright
 
 A ready-made wrapper is provided: `scripts/hdb_run.bat`.
 
-**Notes:**
+**Notes (both fixes):**
 - `.bat` wrapper files MUST have **CRLF** line endings. LF-only batches break cmd parsing with bizarre errors (e.g. `'EM' is not recognized as an internal or external command`).
 - `conhost --headless` output contains ANSI escape sequences — strip them before parsing logs:
   `$t -replace '\x1b\[[0-9;?]*[A-Za-z]', ''`
 - The `©` may appear as `?` in captured logs — harmless.
+- winpty is NOT a good workaround: 0.4.3 MSVC build ships no `winpty.exe`; msys2/cygwin builds need their runtime DLL, and modern msys-2.0.dll/cygwin1.dll versions do not run on 2008 R2.
+
+---
+
+## Phase 1.7: hammerdbcli Won't Start on Old Windows (0xC0000135 / DLL Not Found)
+
+**Symptom:** on Windows Server 2008 R2, `hammerdbcli.exe` exits instantly with `-1073741515` (0xC0000135 = STATUS_DLL_NOT_FOUND); no output at all.
+
+**Cause:** the HammerDB 6.0 Windows build (Tcl 9 era) links against the VC++ 2015+ runtime (`VCRUNTIME140.dll`, `ucrtbase.dll`, ...) which 2008 R2 does not ship by default (2012 R2+ / Win10+ do, which is why it usually "just works").
+
+**Fix:** copy the runtime DLLs next to `hammerdbcli.exe` (DLL search order prefers the exe directory):
+
+```powershell
+$dst = 'C:\HammerDB-6.0'
+foreach ($dll in @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','ucrtbase.dll')) {
+  Copy-Item "C:\Windows\System32\$dll" (Join-Path $dst $dll) -Force
+}
+```
+
+Then combine with Phase 1.6 (TCL_LIBRARY patch) to also survive the GBK banner crash.
+
+---
+
+## Phase 1.8: Remote Multi-Server Execution (SMB + schtasks)
+
+When the benchmark must run ON the target servers themselves (local execution principle — load must not cross network devices) and the servers are only reachable via file sharing:
+
+1. **Probe access:** `Test-NetConnection -ComputerName <ip> -Port 445` (SMB), `135` (RPC/schtasks), `1433` (SQL). Admin share `\\<ip>\C$` access means you can deploy and read logs.
+2. **Deploy:** `robocopy <package> "\\<ip>\C$\hdb" /E` (use a `.ps1` file — Git Bash mangles UNC/backslash args; also `MSYS_NO_PATHCONV=1` for schtasks in Git Bash).
+3. **Execute:** create + run a scheduled task as SYSTEM:
+   ```
+   schtasks /create /S <ip> /U administrator /P <pass> /TN task /TR "C:\hdb\run_xxx.bat" /SC ONCE /ST 23:59 /RU SYSTEM /F
+   schtasks /run /S <ip> /U administrator /P <pass> /TN task
+   ```
+4. **Monitor:** read `\\<ip>\C$\hdb\logs\*.log` over SMB; strip ANSI escapes before parsing.
+5. **Gotchas:**
+   - A hung previous instance blocks new ones (Task Scheduler "do not start new instance" default). `schtasks /end` + kill zombie `cmd.exe`/`conhost.exe` via a taskkill task, then rerun.
+   - Set `TMP`/`TEMP` to a writable dir (e.g. `C:\hdb\logs`) — hammerdbcli writes its jobs DB (`hammer.DB`) there.
+   - **PowerShell 5.1 reads .ps1 files as ANSI** — keep scripts pure ASCII (no Chinese comments/strings), or save with UTF-8 BOM.
+   - Never trust inline PowerShell via Git Bash `-Command "..."` with `$`/backslashes — write a `.ps1` file instead.
+   - 2008 R2 servers usually lack `SQL Server Native Client 11.0` (connect test reports `未发现数据源名称 / data source name not found`) — use the built-in `{SQL Server}` ODBC driver instead.
 
 ---
 
@@ -565,11 +632,14 @@ For reliable capture use `sqlcmd -b -o outfile` (shell `>` redirection from back
 | TPM very low / CPU 1% | Load too light, reduce User Delay or increase VU count |
 | Connection timeout | Check firewall port 1433, TCP/IP protocol enabled |
 | GUI settings don't persist | Edit mssqlserver.xml config file directly |
-| hammerdbcli crashes printing "Copyright ©" banner (GBK/zh-CN Windows, exit 255) | Run under `conhost --headless cmd /c "chcp 65001 >nul & hammerdbcli ..."` (scripts/hdb_run.bat, see Phase 1.6) |
+| hammerdbcli crashes printing "Copyright ©" banner (GBK/zh-CN Windows, exit 255) | Use patched disk Tcl library via TCL_LIBRARY (scripts/prepare_tcl_library.ps1, Phase 1.6); Win10+ alternative: conhost --headless + chcp 65001 (scripts/hdb_run.bat) |
+| hammerdbcli exits -1073741515 (0xC0000135) instantly on 2008 R2 | Deploy vcruntime140/vcruntime140_1/msvcp140/ucrtbase.dll next to the exe (Phase 1.7) |
 | .bat wrapper fails with bizarre parse errors ('EM' is not recognized) | .bat files must use CRLF line endings |
 | Build fails "Incorrect syntax near 'OR'" on SQL Server 2014 too; cust_last missing | Create CUST_LAST manually (scripts/create_cust_last.sql) — data intact, no rebuild (see 3.4) |
 | DBCC CHECKDB prints nothing via sqlcmd (NOCOUNT + NO_INFOMSGS combo) | Drop both; run `DBCC CHECKDB ('tpcc') WITH ALL_ERRORMSGS;`, use `-o` for capture (see 5.4) |
 | Background-launched exe with quoted args exits 0 with no output | Wrap the command in a CRLF .bat and launch the .bat instead |
+| Scheduled task starts but no new instance runs / log not written | A previous instance is hung — `schtasks /end`, kill zombie cmd/conhost via taskkill task, rerun (Phase 1.8) |
+| Remote connect test fails with "data source name not found" (2008 R2 server) | `SQL Server Native Client 11.0` is not installed on the server — switch to built-in `{SQL Server}` driver |
 
 ---
 

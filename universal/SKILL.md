@@ -73,7 +73,12 @@ error writing "stdout": invalid or incomplete multibyte or wide character
     while executing
 "puts "Copyright \u00A9 HammerDB Ltd hosted by tpc.org 2019-2026""
 ```
-即使 `chcp 65001` 也无济于事（stdout 被重定向/管道时 Tcl 使用系统 ANSI 代码页）。**解决办法**：用 `conhost --headless` 给它一个真正的 UTF-8 控制台（见 `scripts/hdb_run.bat`）：
+即使 `chcp 65001` 也无济于事（stdout 被重定向/管道时 Tcl 使用系统 ANSI 代码页）。**推荐方案（全 Windows 版本通用，含 2008 R2、计划任务、任意重定向场景）**：把 exe 内嵌的 Tcl 库解包到磁盘并注入 UTF-8 配置，通过 `TCL_LIBRARY` 加载（一键脚本 `scripts/prepare_tcl_library.ps1`）：
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\prepare_tcl_library.ps1 -HammerDBDir C:\HammerDB-6.0 -OutDir C:\hdb\tcl_lib
+```
+之后每次运行 hammerdbcli 前设置：`set "TCL_LIBRARY=C:\hdb\tcl_lib"`。
+**旧方案（仅 Win10/Server 2016+，conhost 的 --headless 在 2008 R2/2012 R2 无效）**：用 `conhost --headless` 提供 UTF-8 控制台：
 ```bat
 "C:\Windows\System32\conhost.exe" --headless cmd /c "chcp 65001 >nul & "C:\HammerDB-6.0\hammerdbcli.exe" tcl auto scripts\xxx.tcl" > out.log 2>&1
 ```
@@ -81,6 +86,22 @@ error writing "stdout": invalid or incomplete multibyte or wide character
 - `.bat` 包装文件必须是 **CRLF 换行**（LF 会导致 cmd 解析错乱，出现 `'EM' 不是内部或外部命令` 之类的怪错）
 - conhost 输出含 ANSI 转义码，解析日志前先过滤：`$t -replace '\x1b\[[0-9;?]*[A-Za-z]', ''`
 - 日志中 `©` 可能显示为 `?`，无害
+- winpty 不是好方案：msvc 构建无 winpty.exe，msys2/cygwin 构建依赖运行时 DLL 且新版不支持 2008 R2
+
+**旧系统（2008 R2）无法启动 hammerdbcli（0xC0000135）：**
+退出码 -1073741515 = DLL 缺失。把 VC++ 运行库复制到 exe 旁：
+```powershell
+$dst = 'C:\HammerDB-6.0'
+foreach ($dll in @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','ucrtbase.dll')) {
+  Copy-Item "C:\Windows\System32\$dll" (Join-Path $dst $dll) -Force
+}
+```
+
+**远程多服务器执行（SMB + schtasks）：**
+1. 部署：从 `.ps1` 文件里执行 `robocopy <包> "\\<IP>\C$\hdb" /E`（Git Bash 会破坏 UNC 反斜杠参数）
+2. 执行：`schtasks /create /S <IP> /U administrator /P <密码> /TN 任务 /TR "C:\hdb\run.bat" /SC ONCE /ST 23:59 /RU SYSTEM /F` + `/run`
+3. 监控：读 `\\<IP>\C$\hdb\logs\*.log`
+4. 坑：任务旧实例挂起会挡住新实例（`schtasks /end` + taskkill 僵尸 cmd/conhost）；TMP/TEMP 要指向可写目录（hammerdbcli 的 jobs 库写在那里）；PS 5.1 按 ANSI 读 .ps1（脚本保持纯 ASCII 或存 UTF-8 BOM）；2008 R2 服务器通常没有 Native Client 11.0（报"未发现数据源名称"）→ 用内置 `{SQL Server}` 驱动
 
 ### 阶段 1.5：版本与连接能力预检（重要）
 
@@ -286,9 +307,12 @@ DBCC CHECKDB ('tpcc') WITH ALL_ERRORMSGS;
 | command already exists | HammerDB 内部状态冲突 | 重启 HammerDB |
 | Database exists but not empty | 残留数据 | 先执行 delete_schema，再重建 |
 | 建库最后一步存储过程报错（"OR"语法错误，2008 R2 / 2014 都会） | HammerDB 6.0 兼容问题 | 手工补建 cust_last（scripts/create_cust_last.sql），数据未丢失，不要重建 schema |
-| hammerdbcli 启动即崩（Copyright © 横幅，exit 255，GBK/中文系统） | 系统 ANSI 代码页无法编码 © | 用 conhost --headless + chcp 65001 包装（scripts/hdb_run.bat），见阶段 1 |
+| hammerdbcli 启动即崩（Copyright © 横幅，exit 255，GBK/中文系统） | 系统 ANSI 代码页无法编码 © | 推荐：TCL_LIBRARY 补丁（scripts/prepare_tcl_library.ps1）；Win10+ 可用 conhost --headless + chcp 65001 |
+| hammerdbcli 在 2008 R2 上启动即退（0xC0000135 / -1073741515） | 缺 VC++ 运行库 DLL | 复制 vcruntime140/vcruntime140_1/msvcp140/ucrtbase.dll 到 exe 旁 |
 | DBCC CHECKDB 经 sqlcmd 无任何输出 | SET NOCOUNT ON + NO_INFOMSGS 组合（2012 版 sqlcmd） | 去掉两者，用 `DBCC CHECKDB ('tpcc') WITH ALL_ERRORMSGS;` + `-o` 输出（scripts/dbcc_check.bat） |
 | 后台启动带引号参数的程序 exit 0 但无输出 | 参数被吞（如 sqlcmd 退化为交互模式） | 把命令包进 CRLF 换行的 .bat 再启动 |
+| 计划任务启动但新实例不运行/日志不写 | 旧实例挂起占坑（IgnoreNew 策略） | schtasks /end + taskkill 僵尸 cmd/conhost，再重跑 |
+| 远程连接测试报"未发现数据源名称"（2008 R2 服务器） | 服务器未装 Native Client 11.0 | 改用内置 {SQL Server} 驱动 |
 | 建 VU/启动 VU 极慢（每个连接 20-35 秒，2008 R2） | RTM 多核 bug | 安装 SP3（10.50.6000+），见阶段 1.5 |
 | 测试运行时间远超设定时长 | timed 模式每 VU 各自计时 | 属正常现象，检查 VU 启动进度（见阶段 6） |
 | checkschema 通过但按姓氏查客户失败 | cust_last 缺失 | 用 sys.procedures 核验 6 个 SP（见阶段 3） |
@@ -306,9 +330,10 @@ DBCC CHECKDB ('tpcc') WITH ALL_ERRORMSGS;
 | `scripts/delete_schema.tcl` | 删除测试库 |
 | `scripts/run_tpcc.tcl` | 执行 TPC-C 压力测试 |
 | `scripts/auto_monitor.ps1` | 自动监控 + 错误自动终止 |
-| `scripts/hdb_run.bat` | Windows GBK 代码页崩溃修复：在 UTF-8 控制台下运行 hammerdbcli |
+| `scripts/hdb_run.bat` | Windows GBK 代码页崩溃修复（Win10+）：在 UTF-8 控制台下运行 hammerdbcli |
 | `scripts/dbcc_check.bat` | DBCC CHECKDB 包装（sqlcmd -o 捕获，避免输出被吞） |
 | `scripts/create_cust_last.sql` | 补建 cust_last 存储过程（2008 R2 / 2014 建库已知问题修复） |
+| `scripts/prepare_tcl_library.ps1` | 推荐：解包内嵌 Tcl 库 + 注入 UTF-8（TCL_LIBRARY 方案，全 Windows 版本通用） |
 
 ---
 
