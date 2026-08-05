@@ -125,6 +125,37 @@ Write-Host "30 conns: $([math]::Round($sw.Elapsed.TotalSeconds,2))s, avg $([math
 
 ---
 
+## Phase 1.6: Windows GBK/CP936 Codepage Crash (CRITICAL on Chinese/Japanese-locale Windows)
+
+**Symptom:** `hammerdbcli.exe` dies instantly with exit code 255:
+
+```
+HammerDB CLI v6.0
+error writing "stdout": invalid or incomplete multibyte or wide character
+    while executing
+"puts "Copyright \u00A9 HammerDB Ltd hosted by tpc.org 2019-2026""
+    (file "//zipfs:/app/main.tcl" line 33)
+Copyright
+```
+
+**Cause:** HammerDB's Tcl runtime prints a `©` banner at startup. Tcl uses the *console* codepage when stdout is a real console, but the *system ANSI codepage* (e.g. GBK/936 on zh-CN) when stdout is a pipe or file. GBK cannot encode `©`, so the very first `puts` throws. `chcp 65001` alone does NOT help when output is piped/redirected.
+
+**Fix (tested on Windows Server 2019 build 17763, zh-CN locale):** give hammerdbcli a real console with UTF-8 codepage via `conhost --headless`, and redirect *outside* the console:
+
+```bat
+"C:\Windows\System32\conhost.exe" --headless cmd /c "chcp 65001 >nul & "C:\path\to\HammerDB-6.0\hammerdbcli.exe" tcl auto "C:\path\to\script.tcl"" > out.log 2>&1
+```
+
+A ready-made wrapper is provided: `scripts/hdb_run.bat`.
+
+**Notes:**
+- `.bat` wrapper files MUST have **CRLF** line endings. LF-only batches break cmd parsing with bizarre errors (e.g. `'EM' is not recognized as an internal or external command`).
+- `conhost --headless` output contains ANSI escape sequences — strip them before parsing logs:
+  `$t -replace '\x1b\[[0-9;?]*[A-Za-z]', ''`
+- The `©` may appear as `?` in captured logs — harmless.
+
+---
+
 ## Phase 2: Connection Testing
 
 ### 2.1 Create Connection Test Script
@@ -235,19 +266,23 @@ checkschema
 SELECT name FROM sys.procedures ORDER BY name
 ```
 
-### 3.4 SQL Server 2008 R2: Build Fails at Stored Procedures (known issue)
+### 3.4 SQL Server 2008 R2 / 2014: Build Fails at cust_last Stored Procedure (known issue)
 
-On SQL Server 2008 R2, HammerDB 6.0 `buildschema` loads all data and tables fine, then fails at the last step:
+On SQL Server 2008 R2 **and SQL Server 2014** (observed on 2014 SP1 12.0.4237.0 with `SQL Server Native Client 11.0`), HammerDB 6.0 `buildschema` loads all data and tables fine, then fails at the last step:
 
 ```
 Vuser 1:CREATING TPCC STORED PROCEDURES
-Error in Virtual User 1: [Microsoft][ODBC Driver 17][SQL Server]关键字 'OR' 附近有语法错误。
-'CREATE/ALTER PROCEDURE' 必须是查询批次中的第一个语句。
+Error in Virtual User 1: [Microsoft][SQL Server Native Client 11.0][SQL Server]Incorrect syntax near the keyword 'OR'.
+[Microsoft][SQL Server Native Client 11.0][SQL Server]'CREATE/ALTER PROCEDURE' must be the first statement in a query batch.
 ```
 
 Result: **only 5 of 6 SPs get created — `cust_last` is missing.** The data is NOT lost; do NOT delete and rebuild the schema (30+ minutes wasted).
 
-**Fix:** create `CUST_LAST` manually with 2008-R2-compatible T-SQL (parameter signature must match what HammerDB calls: `@w_id INT, @d_id INT, @c_id INT OUTPUT, @c_last VARCHAR(16) OUTPUT`):
+**Note:** in HammerDB 6.0 (GitHub master) the `payment` proc performs the last-name lookup **inline** and does not call `cust_last` — the SP is effectively legacy. Verify whether anything references it:
+`SELECT OBJECT_NAME(object_id) FROM sys.sql_modules WHERE definition LIKE '%cust_last%'`
+Creating it anyway is cheap insurance (checkschema may expect 6 procs).
+
+**Fix:** create `CUST_LAST` manually (script provided: `scripts/create_cust_last.sql`) with 2008-R2-compatible T-SQL (parameter signature must match what HammerDB calls: `@w_id INT, @d_id INT, @c_id INT OUTPUT, @c_last VARCHAR(16) OUTPUT`):
 
 ```sql
 CREATE PROCEDURE dbo.CUST_LAST
@@ -497,9 +532,20 @@ For a VM with N cores and M GB RAM, SQL Server:
 ### 5.4 Post-Test Verification
 
 After test completes, run DBCC CHECKDB on the target SQL Server:
+
 ```sql
-DBCC CHECKDB ('tpcc') WITH NO_INFOMSGS, ALL_ERRORMSGS;
+DBCC CHECKDB ('tpcc') WITH ALL_ERRORMSGS;
 ```
+
+**Gotcha (2012-era sqlcmd, e.g. Client SDK ODBC 110):** prefixing `SET NOCOUNT ON;` and using `WITH NO_INFOMSGS` together makes sqlcmd print **NOTHING at all** — not even the completion message — and still exit 0. Easy to mistake for a hang or a missed run. Run the DBCC statement plain (no NOCOUNT prefix), verbose output is fine:
+
+Expected success output:
+```
+CHECKDB found 0 allocation errors and 0 consistency errors in database 'tpcc'.
+DBCC execution completed. If DBCC printed error messages, contact your system administrator.
+```
+
+For reliable capture use `sqlcmd -b -o outfile` (shell `>` redirection from background-launched processes can produce empty files). A ready-made wrapper is provided: `scripts/dbcc_check.bat`.
 
 ---
 
@@ -519,6 +565,11 @@ DBCC CHECKDB ('tpcc') WITH NO_INFOMSGS, ALL_ERRORMSGS;
 | TPM very low / CPU 1% | Load too light, reduce User Delay or increase VU count |
 | Connection timeout | Check firewall port 1433, TCP/IP protocol enabled |
 | GUI settings don't persist | Edit mssqlserver.xml config file directly |
+| hammerdbcli crashes printing "Copyright ©" banner (GBK/zh-CN Windows, exit 255) | Run under `conhost --headless cmd /c "chcp 65001 >nul & hammerdbcli ..."` (scripts/hdb_run.bat, see Phase 1.6) |
+| .bat wrapper fails with bizarre parse errors ('EM' is not recognized) | .bat files must use CRLF line endings |
+| Build fails "Incorrect syntax near 'OR'" on SQL Server 2014 too; cust_last missing | Create CUST_LAST manually (scripts/create_cust_last.sql) — data intact, no rebuild (see 3.4) |
+| DBCC CHECKDB prints nothing via sqlcmd (NOCOUNT + NO_INFOMSGS combo) | Drop both; run `DBCC CHECKDB ('tpcc') WITH ALL_ERRORMSGS;`, use `-o` for capture (see 5.4) |
+| Background-launched exe with quoted args exits 0 with no output | Wrap the command in a CRLF .bat and launch the .bat instead |
 
 ---
 

@@ -65,6 +65,23 @@ where /R "C:\Program Files" bcp.exe
 setx PATH "%PATH%;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\180\Tools\Binn" /M
 ```
 
+**Windows 中文/日文系统代码页崩溃（重要）：**
+`hammerdbcli.exe` 在 GBK/CP936 系统（如简体中文 Windows）上会因打印 `©` 版权横幅而立即崩溃（exit 255）：
+```
+HammerDB CLI v6.0
+error writing "stdout": invalid or incomplete multibyte or wide character
+    while executing
+"puts "Copyright \u00A9 HammerDB Ltd hosted by tpc.org 2019-2026""
+```
+即使 `chcp 65001` 也无济于事（stdout 被重定向/管道时 Tcl 使用系统 ANSI 代码页）。**解决办法**：用 `conhost --headless` 给它一个真正的 UTF-8 控制台（见 `scripts/hdb_run.bat`）：
+```bat
+"C:\Windows\System32\conhost.exe" --headless cmd /c "chcp 65001 >nul & "C:\HammerDB-6.0\hammerdbcli.exe" tcl auto scripts\xxx.tcl" > out.log 2>&1
+```
+注意：
+- `.bat` 包装文件必须是 **CRLF 换行**（LF 会导致 cmd 解析错乱，出现 `'EM' 不是内部或外部命令` 之类的怪错）
+- conhost 输出含 ANSI 转义码，解析日志前先过滤：`$t -replace '\x1b\[[0-9;?]*[A-Za-z]', ''`
+- 日志中 `©` 可能显示为 `?`，无害
+
 ### 阶段 1.5：版本与连接能力预检（重要）
 
 **任何测试前必须先确认 SQL Server 版本和补丁级别**，否则版本问题会伪装成网络/配置问题，浪费大量时间。
@@ -158,14 +175,14 @@ SELECT name FROM sys.procedures ORDER BY name
 
 建议使用 `scripts/auto_monitor.ps1` 监控建库过程，自动检测错误并终止。
 
-**已知问题（SQL Server 2008 R2）：** 建库最后一步"创建存储过程"可能失败：
+**已知问题（SQL Server 2008 R2 / 2014）：** 建库最后一步"创建存储过程"可能失败（实测 2014 SP1 12.0.4237.0 + SQL Server Native Client 11.0 同样中招）：
 ```
-Error in Virtual User 1: 关键字 'OR' 附近有语法错误。
-'CREATE/ALTER PROCEDURE' 必须是查询批次中的第一个语句。
+Error in Virtual User 1: [Microsoft][SQL Server Native Client 11.0][SQL Server]Incorrect syntax near the keyword 'OR'.
+[Microsoft][SQL Server Native Client 11.0][SQL Server]'CREATE/ALTER PROCEDURE' must be the first statement in a query batch.
 ```
-结果：6 个存储过程中 `cust_last` 缺失（数据不受影响）。**不要删除重建 schema（会浪费 30+ 分钟）**，手工补建即可。修复要点：
+结果：6 个存储过程中 `cust_last` 缺失（数据不受影响）。**不要删除重建 schema（会浪费 30+ 分钟）**，手工补建即可（现成脚本：`scripts/create_cust_last.sql`）。修复要点：
 - 参数签名必须与 HammerDB 调用一致：`@w_id INT, @d_id INT, @c_id INT OUTPUT, @c_last VARCHAR(16) OUTPUT`
-- 用 2008 R2 兼容的 T-SQL 实现"按姓氏查中间客户"（游标 + `@@FETCH_STATUS`），完整脚本见主版本 SKILL.md 的阶段 3.4，或按以下逻辑编写：
+- 用 2008 R2 兼容的 T-SQL 实现"按姓氏查中间客户"（游标 + `@@FETCH_STATUS`），完整脚本见 `scripts/create_cust_last.sql`，或按以下逻辑编写：
 ```sql
 CREATE PROCEDURE dbo.CUST_LAST
 @w_id INT, @d_id INT, @c_id INT OUTPUT, @c_last VARCHAR(16) OUTPUT
@@ -176,6 +193,7 @@ BEGIN
 END
 ```
 - 通过 SqlClient 执行（单个 CREATE PROCEDURE 批不需要 GO），建好后用真实姓氏（如 'ABLEABLEABLE'）测试一次
+- 备注：HammerDB 6.0（GitHub master）的 payment 过程已改为内联按姓氏查询，不调用 cust_last；补建纯属保险（checkschema 可能期望 6 个 SP）。核验是否被引用：`SELECT OBJECT_NAME(object_id) FROM sys.sql_modules WHERE definition LIKE '%cust_last%'`
 
 ### 阶段 5：试跑验证
 
@@ -249,6 +267,13 @@ TEST RESULT : System achieved XXX NOPM from XXX SQL Server TPM
 - Delivery: 4%
 - Stock Level: 4%
 
+**压测后完整性校验（建议）：**
+```sql
+DBCC CHECKDB ('tpcc') WITH ALL_ERRORMSGS;
+```
+成功标志：`CHECKDB found 0 allocation errors and 0 consistency errors in database 'tpcc'.`
+注意（2012 版 sqlcmd 的坑）：语句前**不要**加 `SET NOCOUNT ON`，也**不要**用 `NO_INFOMSGS`——两者组合会让 sqlcmd 完全无输出（连完成消息都不打印，退出码仍为 0）。建议用 `sqlcmd -b -o 输出文件` 捕获（现成脚本：`scripts/dbcc_check.bat`）。
+
 ---
 
 ## 常见错误与解决方案
@@ -260,7 +285,10 @@ TEST RESULT : System achieved XXX NOPM from XXX SQL Server TPM
 | child killed: unknown signal | BCP 模式多 VU 崩溃 | 关闭 BCP 模式（use_bcp false），用单 VU 建库 |
 | command already exists | HammerDB 内部状态冲突 | 重启 HammerDB |
 | Database exists but not empty | 残留数据 | 先执行 delete_schema，再重建 |
-| 建库最后一步存储过程报错（"OR"语法错误，2008 R2） | HammerDB 6.0 兼容问题 | 手工补建 cust_last（见阶段 4），数据未丢失，不要重建 schema |
+| 建库最后一步存储过程报错（"OR"语法错误，2008 R2 / 2014 都会） | HammerDB 6.0 兼容问题 | 手工补建 cust_last（scripts/create_cust_last.sql），数据未丢失，不要重建 schema |
+| hammerdbcli 启动即崩（Copyright © 横幅，exit 255，GBK/中文系统） | 系统 ANSI 代码页无法编码 © | 用 conhost --headless + chcp 65001 包装（scripts/hdb_run.bat），见阶段 1 |
+| DBCC CHECKDB 经 sqlcmd 无任何输出 | SET NOCOUNT ON + NO_INFOMSGS 组合（2012 版 sqlcmd） | 去掉两者，用 `DBCC CHECKDB ('tpcc') WITH ALL_ERRORMSGS;` + `-o` 输出（scripts/dbcc_check.bat） |
+| 后台启动带引号参数的程序 exit 0 但无输出 | 参数被吞（如 sqlcmd 退化为交互模式） | 把命令包进 CRLF 换行的 .bat 再启动 |
 | 建 VU/启动 VU 极慢（每个连接 20-35 秒，2008 R2） | RTM 多核 bug | 安装 SP3（10.50.6000+），见阶段 1.5 |
 | 测试运行时间远超设定时长 | timed 模式每 VU 各自计时 | 属正常现象，检查 VU 启动进度（见阶段 6） |
 | checkschema 通过但按姓氏查客户失败 | cust_last 缺失 | 用 sys.procedures 核验 6 个 SP（见阶段 3） |
@@ -278,6 +306,9 @@ TEST RESULT : System achieved XXX NOPM from XXX SQL Server TPM
 | `scripts/delete_schema.tcl` | 删除测试库 |
 | `scripts/run_tpcc.tcl` | 执行 TPC-C 压力测试 |
 | `scripts/auto_monitor.ps1` | 自动监控 + 错误自动终止 |
+| `scripts/hdb_run.bat` | Windows GBK 代码页崩溃修复：在 UTF-8 控制台下运行 hammerdbcli |
+| `scripts/dbcc_check.bat` | DBCC CHECKDB 包装（sqlcmd -o 捕获，避免输出被吞） |
+| `scripts/create_cust_last.sql` | 补建 cust_last 存储过程（2008 R2 / 2014 建库已知问题修复） |
 
 ---
 
