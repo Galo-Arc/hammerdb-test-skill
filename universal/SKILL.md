@@ -2,7 +2,7 @@
 
 适用于任何 AI Agent 平台（AgentScope、QwenPAW、LangChain、AutoGPT 等）。将本文档作为 System Prompt 或知识库提供给 Agent，Agent 即可根据用户需求独立执行，或逐步引导数据库管理员（DBA）完成测试。
 
-支持 SQL Server 2008/2012/2014/2016/2019/2022。本版本已包含 2026-08 三服务器 6 小时满负荷实测验证的全部经验（标定、预算、监控、验收、退化诊断、安全通道约束）。
+支持 SQL Server 2008/2012/2014/2016/2019/2022。本版本包含标准基准测试与满负荷稳定性测试的完整流程：环境准备、标定、迭代预算、监控、验收判据、吞吐退化诊断，以及远程操作安全约束。
 
 ---
 
@@ -67,7 +67,7 @@ SELECT @@VERSION, SERVERPROPERTY('ProductLevel');
 
 ---
 
-## ⚠️ 安全通道硬规则（实测教训，必须遵守）
+## 远程操作安全约束（必须遵守）
 
 以下远程操作模式会被主机安全系统（HIDS/NDR）检测并**强制断网**，全部来自真实拦截事件，严禁使用：
 
@@ -80,7 +80,7 @@ SELECT @@VERSION, SERVERPROPERTY('ProductLevel');
 - **SMB 文件读写**（445）：`net use \\ip\C$ 密码 /user:administrator` + `[IO.File]` 读写 + `Copy-Item` + `robocopy`
 - **纯 T-SQL**（1433，SqlClient）：SELECT / DBCC / `sp_readerrorlog` / DMV 查询
 
-**派生操作模式（全部实测验证）**：
+**派生操作模式**：
 - **部署**：robocopy 经 SMB 复制（HammerDB 全目录约 56MB/台）
 - **执行**：预先在每台服务器创建**一个本地计划任务**（或请管理员创建一次）；之后所有行为控制通过 **SMB 改写任务目标 .bat/.tcl** 实现——运行中的 hammerdbcli 已把脚本载入内存，改写磁盘文件不影响当前实例，只影响下次触发
 - **进程存活判断**：禁止远程 tasklist。用日志文件两次采样的大小变化、监控 CSV 最后写入时间、`sys.dm_exec_sessions` 计数、`Batch Requests/sec` 差分来推断
@@ -170,9 +170,9 @@ tcstop
 
 ## 第 6 章 稳定性压力测试（方向 B，必须完整阅读）
 
-目标：满负荷连续运行 N 小时（6–48h），零错误、零退化、零损坏。**以下流程经 2026-08-28 三服务器 6 小时实测验证**（精确兑现 6h13m 墙钟、2/3 台官方结果、并捕获一台的真实退化）。
+目标：满负荷连续运行 N 小时（6–48h），零错误、零退化、零损坏。以下流程定义无人值守长时运行的标定、预算、监控与验收要求。
 
-### 6.1 四个静默陷阱
+### 6.1 四类常见失效模式
 
 1. **迭代上限在 Timed 模式下同样生效**：VU 在"自身时长窗口"与"迭代数"中先到先停。默认 1000 万次迭代在满速下 5–8 小时即耗尽——实测案例：GUI 配置 1440 分钟，实际 6.5h 就停了（工作 VU 全部 Complete=1、仅监控 VU 空转、TPM 跌到 50），无人察觉数小时。
 2. **keyandthink=true 会把负载压低 4 个数量级**：仿真键入(18s)+思考(12s)使单 VU 仅 2–3 事务/分钟。稳定性测试必须 `keyandthink=false`（饱和时单 VU 约 4,000–10,000 事务/分钟）。
@@ -192,7 +192,7 @@ tcstop
 ```
 total_iterations ≥ 每 VU TPM × 时长(分钟) × 1.3
 ```
-实测验证：6h 测试按此预算（4M/3.5M/6.5M）三台全部跑满窗口，零截断。`scripts/run_stability.tcl` 会自动计算并在日志打印预算；`__PER_VU_TPM__` 占位符必须替换，否则启动即报错（故意的，防静默截断）。
+示例：6 小时测试按此预算（400 万/350 万/650 万次）即可跑满全部窗口。`scripts/run_stability.tcl` 会自动计算并在日志打印预算；`__PER_VU_TPM__` 占位符必须替换，否则启动即报错（故意的，防静默截断）。
 
 ### 6.4 无人值守预检
 
@@ -206,7 +206,7 @@ total_iterations ≥ 每 VU TPM × 时长(分钟) × 1.3
 
 在目标服务器本地运行，每 60 秒写一行 CSV：CPU%、内存占用/可用、硬页错误、最差磁盘时延、tpcc 日志 MB、PLE、SQL 错误日志增量（明细写 sql_errors_found.txt）；每 5 分钟 CHECKPOINT 保活。兼容 PS 2.0/2008 R2，不依赖本地化计数器名，纯 ASCII。
 
-**已知局限（实测）**：CSV 的 tpm 列不可靠——hammerdbcli 锁住输出文件导致监控解析静默失败或冻结。TPM 趋势改从 **soak 日志自身的计数器序列**计算（每 ~10 秒一行 `194729 MSSQLServer tpm`，一次运行数千样本）。监控 CSV 只对 CPU/内存/页错误/PLE 有权威性。
+**已知局限**：CSV 的 tpm 列不可靠——hammerdbcli 锁住输出文件导致监控解析静默失败或冻结。TPM 趋势改从 **soak 日志自身的计数器序列**计算（每 ~10 秒一行 `194729 MSSQLServer tpm`，一次运行数千样本）。监控 CSV 只对 CPU/内存/页错误/PLE 有权威性。
 巡检节奏：每 30 分钟一次只读检查（日志增长 + CSV 末几行）即可，全部走 SMB。
 
 ### 6.6 验收五判据（实测校准）
@@ -218,10 +218,10 @@ total_iterations ≥ 每 VU TPM × 时长(分钟) × 1.3
 4. **内存健康**：硬页错误持续 ≈0、PLE 无塌陷、日志量走平
 5. **数据完整**：测后 DBCC CHECKDB 干净
 
-**DBCC 捕获陷阱（实测踩坑）**：DBCC 消息走 TDS InfoMessage 通道而非结果集——ExecuteReader 读到 0 行。必须挂 SqlInfoMessageEventHandler（脚本 `scripts/dbcc_check.ps1` 已内置），或用 `sqlcmd -o 文件`。
+**DBCC 输出捕获注意**：DBCC 消息走 TDS InfoMessage 通道而非结果集——ExecuteReader 读到 0 行。必须挂 SqlInfoMessageEventHandler（脚本 `scripts/dbcc_check.ps1` 已内置），或用 `sqlcmd -o 文件`。
 失败定位：在 CSV 找到 CPU/TPM 突变分钟，与 sql_errors_found.txt 和 soak 日志时间戳互证。
 
-### 6.7 运行中吞吐退化的诊断（227 实战手册）
+### 6.7 运行中吞吐退化的诊断
 
 实测案例：SQL 2008 R2 + 64 VU + 同机客户端，吞吐从 281k 滑落到 45k TPM。按此顺序诊断：
 1. **先拿地面真值**：纯 T-SQL 两次采样 `Batch Requests/sec`（sys.dm_os_performance_counters 差分÷10）。实测 3,987/s ≈ 4.5 万 TPM 证实退化属实，并证明 hammerdb 计数器行在说谎（毛刺高达"1.31 亿 TPM"）

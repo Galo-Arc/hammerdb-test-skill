@@ -4,59 +4,59 @@ An AI Agent skill for performing TPC-C benchmark tests and full-load stability t
 
 [简体中文版](README.md)
 
-## What It Does
+## Overview
 
-This skill enables an AI Agent to either **execute directly** or **guide administrators through** two types of tests:
+This skill enables an AI Agent to either **execute directly** or **guide database administrators through** two types of tests:
 
 | Track | Goal | Typical Use |
 |-------|------|-------------|
-| **1. Standard Benchmark** | Measure peak transaction throughput (NOPM/TPM) in 10–60 minutes | Performance baseline, config comparison, compatibility verification |
-| **2. Soak / Stability Test** | Sustained full load for 6–48 hours with a formal five-criteria verdict (zero errors / retention ≥90% / memory healthy / zero corruption / full duration) | "Can it survive 24 hours?" endurance validation |
-| **3. Sequential** | 1 then 2 in one session for a full assessment | Acceptance testing, pre-production evaluation |
+| **1. Standard Benchmark** | Measure peak transaction throughput (NOPM/TPM), 10–60 minutes per run | Performance baseline, configuration comparison, compatibility verification |
+| **2. Soak / Stability Test** | Sustained full load for 6–48 hours with a formal five-criteria verdict (full duration, zero server errors, throughput retention ≥90%, healthy memory, zero data corruption) | Long-duration stability validation, pre-production assessment |
+| **3. Sequential** | Run 1 then 2 in one session for a complete evaluation | Acceptance testing |
 
-## What's New in v2 (driven by real-world runs, Aug 2026)
+## Changes in v2
 
-- **Two-track decision tree**: the skill's first step is confirming the track with the user, including ready-to-use guidance scripts for administrators
-- **Full soak methodology (Phase 6)**: saturation calibration (throughput-plateau criterion), iteration budget formula, unattended pre-flight, per-minute monitoring, five-criteria verdict, and a degradation-diagnosis playbook — all field-proven on a 3-server 6-hour run (exact wall-clock 6h13m; caught and root-caused a 5.6x throughput degradation on one server)
-- **Security-safe channel hard rules**: field incidents proved that WMI remote execution, remote scheduled tasks, and xp_cmdshell (even the *disabling* statement) trigger host security systems with forced disconnection. Codified as two allowed channels only — SMB file I/O + plain T-SQL — plus derived orchestration patterns (local tasks controlled by SMB script rewriting, the one-shot task re-trigger trap, self-cleaning restoration scripts)
-- **New field-proven scripts**: `run_stability.tcl` (auto iteration budget), `stability_monitor.ps1` (per-minute resource monitor), `check_status.ps1` (read-only patrol), `dbcc_check.ps1` (InfoMessage capture), `restore_cleanup.tcl` (self-cleaning restoration)
-- **Troubleshooting expanded**: 10+ field entries (monitor tpm column trap, DBCC InfoMessage channel, PowerShell DataTable unwrapping, 2008 R2 VU creation storm, checkschema false alarms, Timed window start point, and more)
+- **Two-track selection**: the skill's first step confirms the test track with the user, including administrator guidance scripts, to prevent mismatch between test type and requirement
+- **Complete soak methodology**: saturation calibration (throughput-plateau criterion), iteration budget formula, unattended pre-flight checklist, per-minute resource monitoring, five-criteria verdict standard, and a throughput-degradation diagnosis procedure
+- **Remote operation constraints**: WMI remote execution, remote scheduled tasks, and `xp_cmdshell` (including the statement that disables it) can trigger network-isolation policies on some host security systems. This skill restricts all remote operations to two channels: SMB file I/O and plain T-SQL
+- **Script set**: `run_stability.tcl` (automatic iteration budget), `stability_monitor.ps1` (per-minute resource monitoring), `check_status.ps1` (read-only patrol), `dbcc_check.ps1` (DBCC InfoMessage capture), `restore_cleanup.tcl` (post-test environment restoration)
+- **Troubleshooting coverage**: iteration-cap truncation, think-time throttling, DBCC output capture, PowerShell DataTable handling, 2008 R2 concurrent-connection limits, checkschema false alarms, and more
 
 ## Editions
 
 | Edition | Directory | Platform | Notes |
 |---------|-----------|----------|-------|
-| **ZCode Edition** | `.zcode/skills/hammerdb-test/` | ZCode | Auto-trigger, auto-execute, template auto-replacement |
-| **Universal Edition** | `universal/` | AgentScope, QwenPAW, LangChain, AutoGPT, any platform | Standalone doc (Chinese) + scripts, used as knowledge base / system prompt |
+| **ZCode Edition** | `.zcode/skills/hammerdb-test/` | ZCode | Skill auto-trigger and execution, template auto-replacement |
+| **Universal Edition** | `universal/` | AgentScope, QwenPAW, LangChain, AutoGPT, etc. | Standalone Chinese documentation, used as knowledge base or system prompt |
 
-Both editions carry identical track design, procedures, and security rules.
+Both editions share identical track design, procedures, and security constraints.
 
-## Quick Install
+## Installation
 
-### ZCode users
+### ZCode
 
 ```bash
 xcopy /E /I hammerdb-test-skill\.zcode\skills\hammerdb-test %USERPROFILE%\.zcode\skills\hammerdb-test
 ```
 
-### QwenPAW / AgentScope / other platforms
+### Other platforms
 
-Provide `universal/SKILL.md` as knowledge base or system prompt, place `universal/scripts/` where your agent can reach them, and follow the two-track workflow in the document.
+Configure `universal/SKILL.md` as knowledge base or system prompt, and place the scripts from `universal/scripts/` where the agent can access them.
 
 ## Usage Examples
 
 - "Benchmark these SQL Servers" → Standard Benchmark
-- "Run a 24h full-load stability test" → Soak test (auto calibration → budget → monitoring → five-criteria verdict)
+- "Run a 24-hour full-load stability test" → Soak / Stability Test
 - "Full evaluation: benchmark first, then soak" → Sequential
 
-## The Four Silent Traps of Soak Testing (core value of v2)
+## Stability Test Requirements
 
-1. **`total_iterations` caps each VU even in timed mode** — the default 10M ends a "24-hour test" after 5–8 hours silently (observed: a GUI test targeting 24h actually ran 27%)
-2. **Think times throttle load by 4 orders of magnitude** — keyandthink must be OFF for full-load tests
-3. **93–99% memory usage is the buffer pool's normal steady state** — health criteria are hard page faults and page life expectancy, not % used
-4. **The timed window starts at rampup end** — end-time planning must account for it
+Before planning a soak test, the following failure modes must be addressed in the test design (see Phase 6 of the SKILL document):
 
-Security: all remote operations use only the two field-proven zero-alert channels (SMB file I/O + plain T-SQL), avoiding WMI / remote scheduled tasks / xp_cmdshell patterns that trigger host security systems.
+1. **Iteration-cap truncation**: in timed mode, `total_iterations` and the duration window both apply, whichever comes first. The default 10,000,000 iterations are exhausted in roughly 5–8 hours under full load, truncating long runs prematurely. Iterations must be pre-computed as `per-VU TPM × duration (minutes) × 1.3`.
+2. **Think-time throttling**: with `keyandthink=true`, a single VU issues only 2–3 transactions per minute, which cannot constitute full load. Soak tests must set `keyandthink=false`.
+3. **Memory metrics**: buffer-pool residency pushing memory usage to 93–99% is the normal steady state. Memory health is judged by hard page faults (Pages Input/sec) and page life expectancy (PLE).
+4. **Timed window start**: the timing window starts at rampup completion; overall wall-clock time must include VU creation and teardown.
 
 ## License
 

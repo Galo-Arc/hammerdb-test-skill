@@ -230,9 +230,9 @@ Then combine with Phase 1.6 (TCL_LIBRARY patch) to also survive the GBK banner c
 
 ## Phase 1.8: Remote Multi-Server Execution — SECURITY-SAFE CHANNELS ONLY
 
-> **⚠️ HARD SECURITY RULES (all learned from real incidents 2026-08, each caused a forced network disconnection):**
+> **⚠️ REMOTE OPERATION CONSTRAINTS (enforced by host security systems):**
 >
-> Host security systems (HIDS/NDR) detect and BLOCK these patterns. Do NOT use them, ever:
+> The following patterns are detected by host security systems (HIDS/NDR) and blocked, typically with forced network disconnection. Do not use them:
 > 1. **WMI remote execution** (`Get-WmiObject -ComputerName`, `Invoke-WmiMethod`) → alert "WMI命令执行"
 > 2. **Remote schtasks** (`schtasks /S <ip> /create|/run|/end`) → alert "TSCH创建定时任务"
 > 3. **`EXEC xp_cmdshell '<anything>'`** — even for LOCALHOST commands (`tasklist`, `taskkill`, `sc`) → alert "SQL Server攻击利用"
@@ -242,13 +242,13 @@ Then combine with Phase 1.6 (TCL_LIBRARY patch) to also survive the GBK banner c
 > - **SMB file read/write** (445): `net use \\<ip>\C$ <pass> /user:administrator` + `[IO.File]::ReadAllText/WriteAllText` + `Copy-Item` + `robocopy`
 > - **Plain T-SQL** (1433, SqlClient): SELECT / DBCC / `sp_readerrorlog` / dmvs
 >
-> **Orchestration patterns derived from these rules (all field-proven):**
+> **Orchestration patterns compliant with these rules:**
 > - **Deploy**: robocopy over SMB (56MB HammerDB copies in ~1 min per server).
 > - **Execute on server**: pre-create ONE local scheduled task per server while you still have a legitimate channel (or have the admin create it once). Trigger it, and from then on CONTROL BEHAVIOR BY REWRITING THE .bat/.tcl VIA SMB — a running hammerdbcli holds its script in memory, so rewriting the on-disk file is safe and changes what the NEXT trigger does.
 > - **Disable xp_cmdshell**: pure T-SQL `sp_configure 'show advanced options',1; RECONFIGURE; sp_configure 'xp_cmdshell',0; RECONFIGURE`. Be aware the statement itself may alert on paranoid systems (keyword matching) — if the environment is known to be strict, ask the server admin to disable it via RDP/SSMS instead. Do NOT verify by querying `sys.configurations` for the name — the keyword itself is the trigger.
 > - **Process liveness**: NEVER `tasklist` remotely. Infer from: log file size growth (sample twice 30s apart), monitor CSV last-write timestamps, `sys.dm_exec_sessions` counts, `Batch Requests/sec` deltas.
 > - **⚠️ `/SC ONCE /ST <time>` TRAP**: a one-shot task created with a placeholder `/ST 23:59` FIRES AGAIN at 23:59 even if you started it manually with `/run`. Always either (a) neutralize its .bat via SMB right after use, or (b) make the placeholder script a restoration script (see below), so the re-trigger performs cleanup instead of damage.
-> - **Self-cleaning restoration pattern** (field-proven): rewrite the task's target .tcl to a restore script (re-enable wuauserv, kill monitor loops via `wmic process where "commandline like '%stability_monitor.ps1%'" delete`, `taskkill /F /IM hammerdbcli.exe` for hung instances, `schtasks /delete /f /tn hdb_*` for all test tasks including itself, write `restore_done.txt` receipt). The task's own re-trigger executes it LOCALLY on the server — zero remote execution. Ready-made script: `scripts/restore_cleanup.tcl`.
+> - **Self-cleaning restoration pattern**: rewrite the task's target .tcl to a restore script (re-enable wuauserv, kill monitor loops via `wmic process where "commandline like '%stability_monitor.ps1%'" delete`, `taskkill /F /IM hammerdbcli.exe` for hung instances, `schtasks /delete /f /tn hdb_*` for all test tasks including itself, write `restore_done.txt` receipt). The task's own re-trigger executes it LOCALLY on the server — zero remote execution. Ready-made script: `scripts/restore_cleanup.tcl`.
 >   - Caveat: on legacy Windows (2008 R2) deleting the currently-RUNNING task can fail even with `/f` — the failure is caught/logged; if tasks survive, remove them manually the next day (re-runs are idempotent and harmless). On the newest Windows builds `wmic.exe` no longer ships — substitute a `Get-CimInstance Win32_Process` pipeline.
 > - **Windows service changes** (wuauserv disable for the test window): cannot be done via allowed channels remotely → put the `sc config` commands INSIDE the .bat/.tcl that the local task executes.
 > - **Reading a log file locked by hammerdbcli**: `[IO.File]::Open($path,'Open','Read','ReadWrite')` shared-read mode works over SMB.
@@ -672,12 +672,12 @@ For reliable capture use `sqlcmd -b -o outfile` (shell `>` redirection from back
 
 ## Phase 6: Long-Run Stability Test (Soak, 6–48h Sustained Full Load)
 
-Goal: hold the server under **saturated** CPU + memory load for N hours with zero errors, zero disconnections, and no throughput degradation — then prove data integrity. **Field-proven 2026-08-28** on 3 servers (6h soak each): the method delivered exact wall-clock (6h13m vs 6h target), official TEST RESULT on 2/3 servers, and caught a real client-side degradation on the third that a 5-VU GUI test could never expose. The whole phase below incorporates that run's lessons.
+Goal: hold the server under **saturated** CPU + memory load for N hours with zero errors, zero disconnections, and no throughput degradation — then prove data integrity. This phase defines the calibration, budgeting, monitoring, and verdict requirements for unattended long-duration runs.
 
-### 6.1 The Four Silent Traps
+### 6.1 Common Failure Modes
 
-1. **`total_iterations` caps each VU even in timed mode.** A work VU exits at whichever comes first: its own duration window OR `total_iterations` transactions. The usual 10,000,000 ends a flat-out run in ~5–8h. Observed live: a GUI run configured for 1440 min stopped at 6.5h/8.5h — work VUs `Complete=1`, Monitor VU still showing RUNNING, TPM fallen to ~50. No server fault: the client simply stopped generating load. Budget iterations (6.3).
-2. **`keyandthink true` throttles load by ~4 orders of magnitude.** TPC-C keying (18s) + think (12s) times limit one VU to ~2–3 transactions/min — even 100 such VUs only make a few hundred TPM (CPU ~1–5%). Soak runs need `mssqls_keyandthink false` (flat-out loop, ~4,000–10,000 tx/min per VU at saturation), then pick the VU count by probe (6.2). Anchor: 5 flat-out VUs pushed 16 vCPU to only 24–30%.
+1. **`total_iterations` caps each VU even in timed mode.** A work VU exits at whichever comes first: its own duration window OR `total_iterations` transactions. The usual 10,000,000 ends a flat-out run in ~5–8h. In that case the work VUs show `Complete=1`, the Monitor VU keeps the status at RUNNING, and TPM falls to near zero — the client has stopped generating load, which is easy to mistake for a server fault. Budget iterations (6.3).
+2. **`keyandthink true` throttles load by ~4 orders of magnitude.** TPC-C keying (18s) + think (12s) times limit one VU to ~2–3 transactions/min — even 100 such VUs only make a few hundred TPM (CPU ~1–5%). Soak runs need `mssqls_keyandthink false` (flat-out loop, ~4,000–10,000 tx/min per VU at saturation), then pick the VU count by probe (6.2). For scale: 5 flat-out VUs drove a 16-vCPU host to only 24–30% CPU.
 3. **Memory % is not a load metric.** SQL Server's buffer pool takes and keeps RAM: 93–99% used with hard faults/sec ≈ 0 is the expected "memory full" steady state, not an incident. Judge memory health by Pages Input/sec and page life expectancy (the monitor logs both). Transient hard-fault spikes (<2 min, e.g. 300–1000/s during checkpoint/VU exit) are noise; sustained non-zero values are the problem.
 4. **The timed window starts at RAMPUP END, not at `vurun`.** HammerDB prints "Rampup N minutes complete" and only then "Timing test period of N in minutes". A 6h soak started at 12:04 with rampup 10 finished at 18:18 (6h13m wall). Plan the maintenance window accordingly — every estimate of "it should be done by now" must add rampup + VU-creation time.
 
@@ -689,9 +689,9 @@ Goal: hold the server under **saturated** CPU + memory load for N hours with zer
 - **Reusing an existing DB is fine** (e.g. for before/after comparison): verify warehouse count matches what you set in `mssqls_count_ware` — checkschema compares the DB against the dict value, and a mismatch ("schema warehouse count 50 does not equal dict warehouse count of 1") is a config error, not a schema error.
 
 **VU ladder** (with `keyandthink false`): run 10-min probes (`run_stability.tcl` with `__DURATION__`=10, `__RAMPUP__`=2), stepping VUs 32 → 64 → 128… and watch the TEST RESULT of each probe.
-- **Saturation criterion = THROUGHPUT PLATEAU, not CPU plateau.** If 64 VU yields ≤ +5% TPM over 32 VU, the server is saturated at 32 VU even if CPU reads only 44–57% (real case: SQL 2008 R2 box saturated at 32 VU with CPU in the 40s — warehouse lock contention caps throughput before CPU does). CPU 85–95% is the *target zone only when achievable*; report both numbers.
+- **Saturation criterion = THROUGHPUT PLATEAU, not CPU plateau.** If 64 VU yields ≤ +5% TPM over 32 VU, the server is saturated at 32 VU even if CPU reads only 44–57% (warehouse lock contention can cap throughput before CPU does). CPU 85–95% is the *target zone only when achievable*; report both numbers.
 - Record the chosen VU count and steady **per-VU TPM** (total TPM ÷ work VUs) — 6.3 needs it.
-- **Old OS warning (field-proven failure mode):** on Windows Server 2008 R2, building 64 VUs took 25+ minutes, 17/64 VU connections FAILED at creation, and the same-machine client degraded 5.6x over hours (see 6.7). On 2008 R2 keep VU ≤ 32, or place the HammerDB client on a separate jump machine. Windows Server 2012 R2/2019 handled 32 VU flawlessly for 6h.
+- **Old OS limitation:** on Windows Server 2008 R2, VU creation is slow and connection failures during creation are common at high VU counts; the co-located client can also degrade over long runs (see 6.7). On 2008 R2 keep VU ≤ 32, or place the HammerDB client on a separate jump machine.
 
 ### 6.3 Iteration Budget (mandatory math)
 
@@ -716,34 +716,34 @@ Post-run sanity check: work VUs hit `Complete=1` only at/after the full configur
 
 Runs ON the target server, appends a CSV row per 60s sample: CPU %, memory used %/available MB, Pages Input/sec (hard faults), worst disk sec/transfer (ms), tpcc log MB, page life expectancy, and `sql_err_new` = new SQL error-log entries since the previous 10-min scan (full text → `sql_errors_found.txt`). Also issues a 5-min `CHECKPOINT` keepalive. Get-WmiObject/SqlClient based — works on PS 2.0 / 2008 R2, immune to localized counter names; pure ASCII.
 
-**Known limitation (field-proven): the monitor's `tpm` CSV column is unreliable** — hammerdbcli keeps its output file locked, so the monitor's log parse silently fails (column empty) or freezes at a stale value. Compute TPM trends from the SOAK LOG's own counter series instead (a line like `194729 MSSQLServer tpm` every ~10s; thousands of samples per run). The monitor CSV is authoritative for CPU/memory/pages/PLE only.
+**Known limitation: the monitor's `tpm` CSV column is unreliable** — hammerdbcli keeps its output file locked, so the monitor's log parse silently fails (column empty) or freezes at a stale value. Compute TPM trends from the SOAK LOG's own counter series instead (a line like `194729 MSSQLServer tpm` every ~10s; thousands of samples per run). The monitor CSV is authoritative for CPU/memory/pages/PLE only.
 Patrol cadence: a read-only check every 30 min comparing log size growth + last CSV rows is enough; all reads over SMB (Phase 1.8).
 
-### 6.6 Verdict (field-validated criteria)
+### 6.6 Verdict Criteria
 
 A soak PASSES only when all five hold:
 1. **Full duration ran:** TEST RESULT line present; wall-clock ≈ VU creation + rampup + duration (6.1 trap 4); work VUs did NOT complete early.
 2. **Server clean:** zero new SQL error-log errors / warnings / I-O time-outs / disconnections.
-3. **No degradation:** trimmed mean TPM of the last steady window ≥ 90% of the first steady window. Method (field-proven): drop the first 15% of the counter series (rampup+warmup), take first/last 10% windows, trim 10% outliers off both ends of each window (the counter emits occasional garbage spikes — one run showed a "131,131,140 TPM" sample), then average. Real pass examples: 92.3%; real borderline: 82.2% (report as PASS-with-reservations + retest advice); real fail: 15.9%.
+3. **No degradation:** trimmed mean TPM of the last steady window ≥ 90% of the first steady window. Method: drop the first 15% of the counter series (rampup + warmup), take first/last 10% windows, trim 10% outliers off both ends of each window (the counter emits occasional garbage spikes), then average.
 4. **Memory healthy:** Pages Input/sec ≈ 0 sustained, PLE no collapse, log size plateaus.
 5. **Data intact:** post-run `DBCC CHECKDB ('tpcc') WITH ALL_ERRORMSGS` clean.
 
 **⚠️ DBCC output capture gotcha (cost us one silent-empty run):** DBCC messages travel on the TDS InfoMessage channel, NOT in result sets. `ExecuteReader` sees ZERO rows and looks like a hang/miss. Attach a `SqlInfoMessageEventHandler` to the connection (or use `ExecuteNonQuery` + fire connection events), or fall back to `sqlcmd -o file` (Phase 5.4). On zh-CN servers the captured text arrives GBK — save/decode accordingly.
 Failure localization: find the minute where CPU or TPM moved in the CSV, correlate with `sql_errors_found.txt` and the soak log.
 
-### 6.7 Diagnosing Mid-Run Throughput Degradation (the 227 playbook)
+### 6.7 Diagnosing Mid-Run Throughput Degradation
 
-Field case: SQL 2008 R2, 64 VU, client co-located with server. Throughput slid from 281k to 45k TPM (15.9% keep-ratio) between hour 1.5 and 3. Diagnosis chain that nailed it — reuse this order:
+Typical case: SQL 2008 R2, 64 VU, client co-located with server. Throughput slid from 281k to 45k TPM (15.9% keep-ratio) between hour 1.5 and 3. Diagnosis order:
 1. **Ground truth first, counters second:** measure `Batch Requests/sec` twice 10s apart via pure T-SQL (`sys.dm_os_performance_counters`, delta ÷ 10). 3,987/s ≈ 45k TPM confirmed the degradation was real, and proved the hammerdb tpm counter lines (250k–590k with garbage spikes) were lying.
 2. **Exonerate the server:** zero blocking chains (`sys.dm_exec_requests WHERE blocking_session_id <> 0`), log only 34% used (`DBCC SQLPERF(LOGSPACE)` + `log_reuse_wait_desc`), scheduler runnable_tasks = 0, error log clean. Server healthy ⇒ bottleneck is client-side.
 3. **Count survivors:** `sys.dm_exec_sessions WHERE login_name='sa'` (52 vs 64 created — note: match on login_name, NOT program_name LIKE '%ODBC%' which misses these connections), plus FINISHED FAILED count in the log (21).
 4. **Attribute:** co-located client + most-aged OS + highest thread count = client starvation. Cross-check: sibling servers (newer OS, 32 VU) showed zero degradation under identical load.
-Verdict framing: this is a TEST-ARCHITECTURE failure (client), not a DBMS failure — report FAIL for the soak but state explicitly that the server itself was faultless (its DBCC was clean). Remediation: external jump-machine client, VU ≤ 32, or OS upgrade; then retest.
+Verdict framing: this is a test-architecture failure (client), not a DBMS failure — report FAIL for the soak but state explicitly that the server itself was faultless (clean error log and DBCC). Remediation: external jump-machine client, VU ≤ 32, or OS upgrade; then retest.
 Also expect: hung/ultra-slow teardown on such a degraded client (log crawls 1 line/3min, TEST RESULT may never print) — archive evidence, declare per 6.6, and let the restoration task (Phase 1.8) `taskkill` the hung process at cleanup time.
 
 ### 6.8 Result Reporting
 
-Deliverables per soak (all field-tested): per-server TEST RESULT (NOPM/TPM), five-criteria verdict matrix, keep-ratio with method note, CPU avg/max, DBCC verdict, degradation incident section if any (6.7 format), comparison vs prior tests if requested, and the restoration receipt (`restore_done.txt`) after environment cleanup. Numbers every claim — "stable" without a keep-ratio is an opinion.
+Deliverables per soak (all field-tested): per-server TEST RESULT (NOPM/TPM), five-criteria verdict matrix, keep-ratio with method note, CPU avg/max, DBCC verdict, degradation incident section if any (6.7 format), comparison vs prior tests if requested, and the restoration receipt (`restore_done.txt`) after environment cleanup. Every verdict must state the keep-ratio and error counts that support it.
 
 ---
 
@@ -779,7 +779,7 @@ Deliverables per soak (all field-tested): per-server TEST RESULT (NOPM/TPM), fiv
 | Monitor CSV `tpm` column empty or frozen at one value | hammerdbcli locks its output file; monitor's parse silently fails | Compute TPM trend from the soak log's own `N MSSQLServer tpm` counter lines (Phase 6.5) |
 | DBCC CHECKDB returns zero rows via ExecuteReader (looks hung/missed) | DBCC messages ride the TDS InfoMessage channel, not result sets | Attach SqlInfoMessageEventHandler to the connection (Phase 6.6); sqlcmd `-o` also works |
 | PowerShell SQL helper returns empty/Null-array errors | `return $dt` unwraps the DataTable into rows on the pipeline | Always `return ,$dt` (Phase 1.8) |
-| Mid-run throughput collapse on one server only | Co-located client degradation (old OS × high VU count) | Follow the 227 playbook: Batch Requests/sec ground truth → server exoneration → survivor count → attribution (Phase 6.7) |
+| Mid-run throughput collapse on one server only | Co-located client degradation (old OS × high VU count) | Follow the Phase 6.7 diagnosis procedure: Batch Requests/sec ground truth → server exoneration → survivor count → attribution |
 | Soak teardown crawls (1 log line per ~3 min, no TEST RESULT) | Degraded client's slow teardown | Archive evidence, verdict per 6.6, let restoration task taskkill the hung process (Phase 1.8) |
 | VU creation on 2008 R2 takes 25+ min, some VUs fail to connect | Old OS login storm | Cap VU ≤ 32 on 2008 R2 or externalize the client (Phase 6.2) |
 | checkschema fails "warehouse count N does not equal dict count M" on an existing DB | `mssqls_count_ware` not set to match the reused DB | Set diset count_ware = actual warehouses before checkschema (Phase 6.2) |

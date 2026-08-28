@@ -216,7 +216,7 @@ Only 5 of 6 procs exist (`cust_last` missing). Data is intact — do NOT rebuild
 
 ---
 
-## Field-Proven Issues (2026-08-28 three-server 6h soak)
+## Long-Run Stability — Additional Issues
 
 ### Problem: monitor CSV `tpm` column empty (215/198) or frozen at one stale value (227)
 **Cause:** hammerdbcli keeps its output file locked while running; the monitor's attempt to parse it silently fails, or succeeds once and caches.
@@ -231,20 +231,20 @@ Only 5 of 6 procs exist (`cust_last` missing). Data is intact — do NOT rebuild
 **Fix:** always `return ,$dt` (comma operator preserves the array/table wrapper).
 
 ### Problem: one server's throughput collapses mid-soak while siblings stay flat
-**Field case:** SQL 2008 R2 + 64 VU + co-located client: 281k → 45k TPM (15.9% keep-ratio).
-**Diagnosis order (the 227 playbook):**
+**Example:** SQL 2008 R2 + 64 VU + co-located client: 281k → 45k TPM (15.9% keep-ratio).
+**Diagnosis order (see SKILL.md Phase 6.7):**
 1. Ground truth: `Batch Requests/sec` delta over 10s via `sys.dm_os_performance_counters` (3,987/s ≈ 45k TPM confirmed real; the hammerdb tpm counter lines were lying with garbage spikes up to "131,131,140")
 2. Exonerate server: blocking chains = 0, `DBCC SQLPERF(LOGSPACE)` < 40%, scheduler runnable = 0, error log clean
 3. Count survivors: `sys.dm_exec_sessions WHERE login_name='sa'` (52 vs 64 — do NOT use `program_name LIKE '%ODBC%'`, it misses these) + FINISHED FAILED lines
 4. Attribute: most-aged OS × highest VU count × co-located client ⇒ client-side starvation. Remediate: external client, VU ≤ 32 on 2008 R2, or OS upgrade.
-**Framing:** report the soak as FAIL but state the server itself was faultless (clean error log + clean DBCC) — it is a test-architecture failure.
+**Framing:** report the soak as FAIL but state the server itself was faultless (clean error log + clean DBCC) — the failure is in the test architecture, not the DBMS.
 
 ### Problem: soak teardown crawls — one log line per ~3 minutes, TEST RESULT never prints
 **Cause:** the degraded co-located client takes forever to wind down (each VU exit blocks on timeprofile generation).
 **Fix:** don't wait indefinitely. Archive the log + CSV snapshots, deliver the verdict from the evidence you have, and let the restoration scheduled task `taskkill /F /IM hammerdbcli.exe` the hung instance at cleanup time.
 
 ### Problem: VU creation on Windows Server 2008 R2 takes 25+ minutes and some VUs fail to connect
-**Field case:** 17/64 VU connections failed at creation under the login storm.
+**Example:** 17/64 VU connections failed at creation under the login storm.
 **Fix:** cap VU ≤ 32 on 2008 R2, or place the HammerDB client on a separate jump machine. Windows Server 2012 R2 and 2019 handled 32 VU for 6h without a single failure.
 
 ### Problem: checkschema fails on an EXISTING database built by HammerDB 4.3
