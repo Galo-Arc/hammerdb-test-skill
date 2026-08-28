@@ -217,6 +217,11 @@ Only 5 of 6 procs exist (`cust_last` missing). Data is intact — do NOT rebuild
 ---
 
 ## Long-Run Stability — Additional Issues
+### Problem: scheduled restoration dies at its first step, receipt never written
+**Symptom:** the placeholder task fires at its trigger time, the log shows the banner and "RESTORATION RUN", then output stops (or the wrapper prints a non-zero exit) — wuauserv still disabled, tasks still present, no receipt.
+**Cause:** the restoration was routed through hammerdbcli (task → soak.bat → hammerdbcli → cleanup.tcl), and its first command `taskkill /F /IM hammerdbcli.exe` killed the interpreter running the restoration itself.
+**Fix:** the cleanup batch must be executed by the scheduler DIRECTLY (task /tr points to a plain .bat, no hammerdbcli involvement). A hung test instance also blocks the trigger via the default "do not start a new instance" policy — use the manual cleanup batch (`admin_cleanup.bat`) in that case. See SKILL.md Phase 1.8.
+
 
 ### Problem: monitor CSV `tpm` column empty (215/198) or frozen at one stale value (227)
 **Cause:** hammerdbcli keeps its output file locked while running; the monitor's attempt to parse it silently fails, or succeeds once and caches.

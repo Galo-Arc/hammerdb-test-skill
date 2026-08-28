@@ -183,7 +183,8 @@ hammerdb-test-skill/
 │   │   ├── hdb_run.bat                 # UTF-8 console wrapper
 │   │   ├── prepare_tcl_library.ps1     # Tcl library UTF-8 patch
 │   │   ├── create_cust_last.sql        # Manual cust_last procedure fix
-│   │   └── restore_cleanup.tcl         # Post-test environment restoration
+│   │   ├── restore_cleanup.bat         # Post-test environment restoration (scheduler-run)
+│   │   └── admin_cleanup.bat           # One-time administrator cleanup (server console)
 │   └── references/
 │       └── troubleshooting.md          # Troubleshooting manual
 │

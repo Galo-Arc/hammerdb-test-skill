@@ -183,7 +183,8 @@ hammerdb-test-skill/
 │   │   ├── hdb_run.bat                 # UTF-8 控制台包装脚本
 │   │   ├── prepare_tcl_library.ps1     # Tcl 库 UTF-8 补丁准备脚本
 │   │   ├── create_cust_last.sql        # cust_last 存储过程手工修复脚本
-│   │   └── restore_cleanup.tcl         # 测试后环境恢复脚本
+│   │   ├── restore_cleanup.bat         # 测试后环境恢复脚本（计划任务直接执行）
+│   │   └── admin_cleanup.bat           # 管理员一次性清理脚本（服务器控制台运行）
 │   └── references/
 │       └── troubleshooting.md          # 故障诊断手册
 │

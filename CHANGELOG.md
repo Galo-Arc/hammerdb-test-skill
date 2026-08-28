@@ -33,6 +33,12 @@
 - README 重构为面向管理员与自动化工具的功能与操作说明
 - 版本变更记录独立至本文件（CHANGELOG.md / CHANGELOG_EN.md），README 不再包含版本更新内容
 
+### 修复（2026-08-29）
+
+- 环境自恢复重设计：restore_cleanup.tcl 经由 hammerdbcli 执行，首条 taskkill 会杀死自身解释器，恢复在第一步即中断（挂死的测试实例还会因单实例策略阻塞占位任务触发，恢复完全不执行）；废弃 restore_cleanup.tcl，改为纯 cmd 的 restore_cleanup.bat，由计划任务直接执行
+- SKILL.md 明确设计规则"恢复流程严禁经由 hammerdbcli"，补充单实例阻塞与旧系统删除任务的注意事项；troubleshooting 手册新增该失败特征的排查条目
+- 新增 admin_cleanup.bat：管理员在服务器控制台运行的一次性清理脚本（幂等：结束残留 hammerdbcli、恢复 Windows Update、停止监控循环、删除全部测试任务、写清理凭证）
+
 ## v1（2026-07-29 首次发布，2026-08-05 最后更新）
 
 - 首次发布：TPC-C 基准测试完整流程——环境检查（HammerDB、ODBC 驱动、bcp）、连接测试与故障排查、TPC-C 测试库创建与管理、可配置并发与时长的压力测试、实时监控 + 自动错误终止、结果分析与报告（NOPM/TPM）

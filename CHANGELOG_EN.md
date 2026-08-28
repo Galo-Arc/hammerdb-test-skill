@@ -33,6 +33,12 @@ This file records the version history of the skill. For features and usage, see 
 - README restructured as a feature-and-usage document for administrators and automation tools
 - Version history moved into this file (CHANGELOG.md / CHANGELOG_EN.md); the README no longer contains version-update content
 
+### Fix (2026-08-29)
+
+- Restoration redesign: restore_cleanup.tcl ran inside hammerdbcli, whose first command (`taskkill /IM hammerdbcli.exe`) killed its own interpreter — the restoration died at step one (a hung test instance also blocked the placeholder task via the single-instance policy, so the cleanup never fired at all). restore_cleanup.tcl is deprecated in favor of a plain-cmd restore_cleanup.bat executed directly by the scheduler
+- SKILL.md now states the design rule "never route the restoration through hammerdbcli" plus the single-instance blocking and legacy task-deletion caveats; the troubleshooting manual gains an entry for this failure signature
+- Added admin_cleanup.bat: a one-time administrator cleanup script run on the server console (idempotent: kill leftover hammerdbcli, re-enable Windows Update, stop monitor loops, delete all test tasks, write a receipt)
+
 ## v1 (first released 2026-07-29, last updated 2026-08-05)
 
 - Initial release: complete TPC-C benchmark workflow — environment checks (HammerDB, ODBC driver, bcp), connection testing and troubleshooting, TPC-C schema build/verify/delete, stress runs with configurable concurrency and duration, live monitoring with automatic error termination, result analysis (NOPM/TPM)
