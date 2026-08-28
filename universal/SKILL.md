@@ -85,8 +85,9 @@ SELECT @@VERSION, SERVERPROPERTY('ProductLevel');
 - **执行**：预先在每台服务器创建**一个本地计划任务**（或请管理员创建一次）；之后所有行为控制通过 **SMB 改写任务目标 .bat/.tcl** 实现——运行中的 hammerdbcli 已把脚本载入内存，改写磁盘文件不影响当前实例，只影响下次触发
 - **进程存活判断**：禁止远程 tasklist。用日志文件两次采样的大小变化、监控 CSV 最后写入时间、`sys.dm_exec_sessions` 计数、`Batch Requests/sec` 差分来推断
 - **⚠️ 一次性任务陷阱**：`schtasks /create /sc once /st 23:59` 的任务即使手动 `/run` 过，23:59 仍会**再次自动触发**。处置：用后立即经 SMB 把目标脚本改写为无害化/恢复脚本
-- **自清理恢复模式**：把任务目标 .tcl 改写为恢复脚本（重启 wuauserv、按命令行精确清理监控进程、taskkill 残留 hammerdbcli、自删全部测试任务、写 restore_done.txt 凭证），借任务自身的再触发在服务器**本地**执行，零远程操作。脚本见 `scripts/restore_cleanup.tcl`
-  - 注意：2008 R2 上删除**正在运行**的任务即使加 /f 也可能失败——脚本会捕获并记录；若任务残留，次日手动删除即可（重复执行恢复脚本无害且幂等）。最新 Windows 已移除 wmic.exe，需改用 Get-CimInstance 管道清理监控进程
+- **自清理恢复模式**：创建占位任务时使其**直接指向清理批处理**（`schtasks /create /f /tn hdb_soak /tr "C:\hdbestore_cleanup.bat" ...`），恢复工作全部写在该 .bat 中（重启 wuauserv、taskkill 残留 hammerdbcli、按命令行清理监控进程、自删全部测试任务、写 restore_done.txt 凭证）。任务自身的定时触发会在服务器**本地**执行，零远程操作。脚本见 `scripts/restore_cleanup.bat`
+  - ⚠️ **恢复流程严禁经由 hammerdbcli 执行**（任务 → soak.bat → hammerdbcli → cleanup）：清理命令中的 `taskkill /IM hammerdbcli.exe` 会杀死自身解释器，恢复在第一步即中断（已实测发生的失败）。清理批处理必须是计划任务直接执行的纯 cmd 脚本
+  - 注意：触发时刻上一实例仍在运行的任务会被默认策略跳过——某台测试挂死意味着它的恢复不会触发，需改用手动清理批处理；2008 R2 上删除运行中任务即使加 /f 也可能失败，次日手动删除即可（重复执行无害幂等）；最新 Windows 已移除 wmic.exe，需改用 Get-CimInstance 管道
 - **读被锁日志**：`[IO.File]::Open($path,'Open','Read','ReadWrite')` 共享读模式
 - **PowerShell DataTable 陷阱**：函数内 `return $dt` 会被管道拆包成行集合，必须 `return ,$dt`
 - 所有 .ps1 必须纯 ASCII（PS 5.1 按 ANSI 读取）；中文服务器的控制台/DBCC 输出为 GBK 编码
@@ -288,7 +289,7 @@ total_iterations ≥ 每 VU TPM × 时长(分钟) × 1.3
 | stability_monitor.ps1 | 稳定性测试分钟级资源监控（6.5）|
 | check_status.ps1 | 只读巡检（SMB 读取，安全合规）|
 | dbcc_check.ps1 / dbcc_check.bat | DBCC 校验（InfoMessage 捕获已内置）|
-| restore_cleanup.tcl | 自清理恢复脚本（经本地任务触发执行）|
+| restore_cleanup.bat | 自清理恢复脚本（任务直接执行的纯 cmd，严禁经 hammerdbcli 触发）|
 | create_cust_last.sql | 2008 R2/2014 建库补丁 |
 | hdb_run.bat | conhost UTF-8 包装器（Win10+）|
 
