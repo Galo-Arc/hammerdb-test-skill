@@ -28,13 +28,13 @@ $process = [System.Diagnostics.Process]::Start($psi)
 $pid = $process.Id
 Write-Host "PID: $pid" -ForegroundColor Yellow
 
+# NOTE: patterns are substring matches against the whole log. Do NOT add broad words
+# like "SSL" or "timeout" - transient single-line hiccups would kill a legitimate run.
 $errorPatterns = @(
     "Error in Virtual User",
     "FINISHED FAILED",
     "could not be established",
-    "child killed",
-    "SSL",
-    "timeout"
+    "child killed"
 )
 
 $startTime = Get-Date
